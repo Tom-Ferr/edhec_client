@@ -26,7 +26,7 @@ function App() {
     const fetchMetadata = async () => {
       setLoading(true);
       try {
-        const resp = await fetch(`http://localhost:3000/metadata/${mintParam}`);
+        const resp = await fetch(`https://edhec-server.onrender.com/metadata/${mintParam}`);
         if (!resp.ok) throw new Error(`Server responded with status ${resp.status}`);
         const data = await resp.json();
         setMetadata(data);
@@ -53,7 +53,7 @@ function App() {
       formData.append("image", imageFile);
       if (extraFile) formData.append("extraFile", extraFile);
 
-      const resp = await fetch("http://localhost:3000/upload", {
+      const resp = await fetch("https://edhec-server.onrender.com/upload", {
         method: "POST",
         body: formData
       });
