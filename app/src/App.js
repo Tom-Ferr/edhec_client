@@ -14,6 +14,7 @@ function App() {
   const [uploading, setUploading] = useState(false);
 
   const timelineRef = useRef(null);
+  const nftRefs = useRef([]);
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
   // Get API URL from environment variable with fallback for development
@@ -55,6 +56,35 @@ function App() {
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
+
+  // Intersection Observer for scroll-based data display
+  useEffect(() => {
+    if (nftChain.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const index = parseInt(entry.target.getAttribute('data-index'), 10);
+            setSelectedNft(nftChain[index]);
+          }
+        });
+      },
+      {
+        threshold: 0.6, // Show data when 60% of card is visible
+        rootMargin: '-100px 0px -100px 0px' // Adjust trigger area
+      }
+    );
+
+    // Observe all NFT cards
+    nftRefs.current.forEach((ref) => {
+      if (ref) observer.observe(ref);
+    });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [nftChain]);
 
   // Read query param ?mint=<address>
   const queryParams = new URLSearchParams(window.location.search);
@@ -326,7 +356,7 @@ function App() {
               }} />
             </div>
 
-            {/* Timeline Center Line */}
+            {/* Timeline Center Line - CLEAN VERSION WITHOUT DOTS */}
             <div style={{
               position: 'absolute',
               left: '50%',
@@ -348,73 +378,51 @@ function App() {
                 const parallaxOffset = getParallaxOffset(index);
                 const isFirst = index === 0;
                 const isLast = index === nftChain.length - 1;
+                const isSelected = selectedNft?.mint === nft.mint;
 
                 return (
                   <div
                     key={nft.mint}
-                    onMouseEnter={() => setSelectedNft(nft)}
-                    onMouseLeave={() => setSelectedNft(null)}
+                    ref={el => nftRefs.current[index] = el}
+                    data-index={index}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: isEven ? 'flex-start' : 'flex-end',
                       marginBottom: '80px',
                       position: 'relative',
-                      cursor: 'pointer',
                       transform: `translateY(${parallaxOffset}px)`,
                       transition: 'transform 0.6s cubic-bezier(0.23, 1, 0.32, 1)'
                     }}
                   >
-                    {/* Timeline Dot with Connection */}
+                    {/* CLEAN CONNECTION LINE - NO DOT */}
                     <div style={{
                       position: 'absolute',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      width: '24px',
-                      height: '24px',
-                      borderRadius: '50%',
-                      background: isFirst ? mikoColors.highlight : 
-                                 isLast ? mikoColors.accent : mikoColors.primary,
-                      border: `4px solid ${mikoColors.background}`,
-                      boxShadow: `0 0 0 2px ${isFirst ? mikoColors.highlight : isLast ? mikoColors.accent : mikoColors.primary}`,
-                      zIndex: 4,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '10px',
-                      fontWeight: 'bold',
-                      color: mikoColors.background
-                    }}>
-                      {isFirst ? 'S' : isLast ? 'L' : index + 1}
-                    </div>
-
-                    {/* Connection Line from Dot to Card */}
-                    <div style={{
-                      position: 'absolute',
-                      left: isEven ? 'calc(50% + 12px)' : '50%',
-                      right: isEven ? 'auto' : 'calc(50% + 12px)',
-                      top: '12px',
+                      left: isEven ? 'calc(50% + 1px)' : '50%',
+                      right: isEven ? 'auto' : 'calc(50% + 1px)',
+                      top: '50%',
                       height: '2px',
                       background: `linear-gradient(to ${isEven ? 'right' : 'left'}, ${mikoColors.primary}, ${mikoColors.border})`,
-                      zIndex: 2
+                      zIndex: 2,
+                      transform: 'translateY(-50%)'
                     }} />
 
-                    {/* NFT Card with Hover Effects */}
+                    {/* NFT Card */}
                     <div style={{
                       width: isMobile ? '85%' : '42%',
                       background: mikoColors.surface,
                       borderRadius: '16px',
                       padding: '24px',
-                      boxShadow: selectedNft?.mint === nft.mint 
+                      boxShadow: isSelected 
                         ? `0 20px 60px ${mikoColors.accent}20, 0 8px 32px rgba(0,0,0,0.4)` 
                         : '0 8px 32px rgba(0,0,0,0.3)',
                       transition: 'all 0.4s cubic-bezier(0.23, 1, 0.32, 1)',
-                      transform: selectedNft?.mint === nft.mint ? 'scale(1.02) translateY(-5px)' : 'scale(1)',
-                      border: `1px solid ${selectedNft?.mint === nft.mint ? mikoColors.accent : mikoColors.border}`,
+                      transform: isSelected ? 'scale(1.02) translateY(-5px)' : 'scale(1)',
+                      border: `1px solid ${isSelected ? mikoColors.accent : mikoColors.border}`,
                       position: 'relative',
                       overflow: 'hidden'
                     }}>
-                      {/* Hover Border Effect */}
+                      {/* Active Border Effect */}
                       <div style={{
                         position: 'absolute',
                         top: 0,
@@ -422,7 +430,7 @@ function App() {
                         right: 0,
                         height: '3px',
                         background: `linear-gradient(90deg, ${mikoColors.accent}, ${mikoColors.highlight})`,
-                        transform: selectedNft?.mint === nft.mint ? 'scaleX(1)' : 'scaleX(0)',
+                        transform: isSelected ? 'scaleX(1)' : 'scaleX(0)',
                         transition: 'transform 0.4s ease',
                         transformOrigin: 'left'
                       }} />
@@ -519,8 +527,8 @@ function App() {
                         </div>
                       )}
 
-                      {/* Additional Data Panel - Shows on Hover */}
-                      {selectedNft?.mint === nft.mint && nft.secondFileData && (
+                      {/* Additional Data Panel - Shows based on scroll position */}
+                      {isSelected && nft.secondFileData && (
                         <div style={{
                           background: mikoColors.lightSurface,
                           padding: '20px',
@@ -648,27 +656,17 @@ function App() {
                 transform: `translateY(${getParallaxOffset(nftChain.length)}px)`,
                 transition: 'transform 0.6s cubic-bezier(0.23, 1, 0.32, 1)'
               }}>
-                {/* Timeline Dot for Upload */}
+                {/* CLEAN CONNECTION LINE FOR UPLOAD - NO DOT */}
                 <div style={{
                   position: 'absolute',
                   left: '50%',
-                  transform: 'translateX(-50%)',
-                  width: '24px',
-                  height: '24px',
-                  borderRadius: '50%',
-                  background: mikoColors.highlight,
-                  border: `4px solid ${mikoColors.background}`,
-                  boxShadow: `0 0 0 2px ${mikoColors.highlight}`,
-                  zIndex: 4,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '12px',
-                  fontWeight: 'bold',
-                  color: mikoColors.background
-                }}>
-                  +
-                </div>
+                  right: 'calc(50% + 1px)',
+                  top: '50%',
+                  height: '2px',
+                  background: `linear-gradient(to left, ${mikoColors.primary}, ${mikoColors.border})`,
+                  zIndex: 2,
+                  transform: 'translateY(-50%)'
+                }} />
 
                 {/* Upload Card - Subtle and Integrated */}
                 <div style={{
