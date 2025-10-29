@@ -48,6 +48,57 @@ function App() {
     warning: '#FF9800'
   };
 
+  // Manual Airdrop Function
+  const requestManualAirdrop = async () => {
+    if (!wallet) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      console.log("🔄 Requesting manual airdrop for:", wallet.publicKey);
+      
+      const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+      const publicKey = new PublicKey(wallet.publicKey);
+      
+      // Request airdrop
+      const signature = await connection.requestAirdrop(
+        publicKey,
+        0.1 * LAMPORTS_PER_SOL // 0.1 SOL
+      );
+      
+      console.log("⏳ Waiting for airdrop confirmation...");
+      
+      // Wait for confirmation
+      const confirmation = await connection.confirmTransaction(signature, 'confirmed');
+      
+      if (confirmation.value.err) {
+        throw new Error(`Airdrop failed: ${JSON.stringify(confirmation.value.err)}`);
+      }
+      
+      console.log("✅ Airdrop completed successfully");
+      
+      // Update balance
+      const newBalance = await connection.getBalance(publicKey);
+      setWalletBalance(newBalance / LAMPORTS_PER_SOL);
+      
+      setError('✅ Successfully received 0.1 SOL airdrop!');
+      
+    } catch (err) {
+      console.error('❌ Manual airdrop failed:', err);
+      
+      let errorMessage = 'Airdrop failed: ' + err.message;
+      
+      if (err.message.includes('429') || err.message.includes('rate limit')) {
+        errorMessage = `❌ Airdrop rate limit reached.\n\n💰 Please get test SOL from:\n• https://faucet.solana.com\n• https://solfaucet.com\n\nQuick SOL Faucet Instructions:\n1. Copy your wallet address above\n2. Visit any of the faucet links\n3. Paste your address and request SOL\n4. Return here and refresh your balance`;
+      }
+      
+      setError(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Helper function to create token accounts for a wallet
   const createTokenAccountsForWallet = async (connection, keypair) => {
     try {
@@ -70,151 +121,150 @@ function App() {
   };
 
   // Create New Solana Wallet
-  // Create New Solana Wallet
-const createNewWallet = async () => {
-  setIsCreatingWallet(true);
-  setError(null);
-  
-  try {
-    console.log("🔑 Step 1: Generating keypair...");
-    // Generate new keypair
-    const keypair = Keypair.generate();
-    const publicKey = keypair.publicKey.toString();
-    console.log("✅ Keypair generated:", publicKey);
-
-    console.log("🌐 Step 2: Connecting to Solana...");
-    // Connect to Solana devnet with multiple RPC endpoints
-    const rpcEndpoints = [
-      'https://api.devnet.solana.com',
-      'https://devnet.helius-rpc.com/',
-      'https://solana-devnet.rpcpool.com/'
-    ];
+  const createNewWallet = async () => {
+    setIsCreatingWallet(true);
+    setError(null);
     
-    let connection;
-    let connectionError;
-    
-    // Try different RPC endpoints
-    for (const endpoint of rpcEndpoints) {
-      try {
-        connection = new Connection(endpoint, 'confirmed');
-        // Test the connection
-        await connection.getVersion();
-        console.log(`✅ Connected to RPC: ${endpoint}`);
-        break;
-      } catch (err) {
-        connectionError = err;
-        console.log(`❌ Failed to connect to ${endpoint}:`, err.message);
-        continue;
-      }
-    }
-    
-    if (!connection) {
-      throw new Error('All RPC endpoints failed. Please try again later.');
-    }
-
-    console.log("💰 Step 3: Checking balance...");
-    let balance = await connection.getBalance(keypair.publicKey);
-    console.log(`✅ Initial balance: ${balance / LAMPORTS_PER_SOL} SOL`);
-
-    // Automatic airdrop with retry logic
-    if (balance === 0) {
-      console.log("🔄 Step 3.5: Requesting automatic airdrop...");
-      
-      let airdropSuccess = false;
-      let lastAirdropError;
-      
-      // Try airdrop with multiple RPCs and retries
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        for (const endpoint of rpcEndpoints) {
-          try {
-            console.log(`🔄 Airdrop attempt ${attempt} on ${endpoint}...`);
-            const airdropConnection = new Connection(endpoint, 'confirmed');
-            
-            const signature = await airdropConnection.requestAirdrop(
-              keypair.publicKey,
-              0.1 * LAMPORTS_PER_SOL // Request 0.1 SOL to avoid rate limits
-            );
-            
-            // Wait for confirmation with timeout
-            console.log("⏳ Waiting for airdrop confirmation...");
-            const confirmation = await airdropConnection.confirmTransaction(signature, 'confirmed');
-            
-            if (confirmation.value.err) {
-              throw new Error(`Airdrop failed: ${JSON.stringify(confirmation.value.err)}`);
-            }
-            
-            console.log("✅ Airdrop completed successfully");
-            airdropSuccess = true;
-            break;
-            
-          } catch (airdropError) {
-            lastAirdropError = airdropError;
-            console.log(`❌ Airdrop failed on ${endpoint}:`, airdropError.message);
-            
-            // Wait before retry
-            await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
-          }
-        }
-        if (airdropSuccess) break;
-      }
-      
-      if (!airdropSuccess) {
-        console.warn("⚠️ Automatic airdrop failed, but continuing with wallet creation");
-        // Don't throw error - continue with wallet creation even if airdrop fails
-        setError(`✅ Wallet created successfully!\n\n⚠️ Automatic SOL airdrop failed: ${lastAirdropError?.message}\n\n💰 You can get SOL manually from:\n• https://faucet.solana.com\n• https://solfaucet.com\n• Use the "Try Get SOL" button above`);
-      } else {
-        // Update balance after successful airdrop
-        balance = await connection.getBalance(keypair.publicKey);
-        console.log(`💰 New balance after airdrop: ${balance / LAMPORTS_PER_SOL} SOL`);
-        setError('✅ Wallet created successfully! 0.1 SOL airdropped to your wallet.');
-      }
-    } else {
-      setError(null);
-    }
-
-    console.log("🏦 Step 4: Creating token accounts...");
-    // Create token accounts for common collections - non-blocking
     try {
-      await createTokenAccountsForWallet(connection, keypair);
-      console.log("✅ Token accounts process completed");
-    } catch (tokenError) {
-      console.log("⚠️ Token account creation had issues:", tokenError.message);
-      // Don't fail wallet creation if token accounts fail
-    }
+      console.log("🔑 Step 1: Generating keypair...");
+      // Generate new keypair
+      const keypair = Keypair.generate();
+      const publicKey = keypair.publicKey.toString();
+      console.log("✅ Keypair generated:", publicKey);
 
-    console.log("💾 Step 5: Setting up wallet state...");
-    const newWallet = {
-      publicKey: publicKey,
-      secretKey: Array.from(keypair.secretKey),
-      keypair: keypair,
-      balance: balance / LAMPORTS_PER_SOL
-    };
-    
-    setWallet(newWallet);
-    setWalletBalance(balance / LAMPORTS_PER_SOL);
-    setWalletSecretKey(JSON.stringify(Array.from(keypair.secretKey)));
-    
-    console.log('🎉 Step 6: Wallet creation complete!');
-    
-  } catch (err) {
-    console.error('❌ Wallet creation failed:', err);
-    
-    // Provide specific error messages
-    let errorMessage = 'Failed to create wallet: ' + err.message;
-    
-    if (err.message.includes('429') || err.message.includes('rate limit')) {
-      errorMessage = `❌ Airdrop rate limit reached.\n\n💰 Please get test SOL from:\n• https://faucet.solana.com\n• https://solfaucet.com\n• Use the "Try Get SOL" button above\n\nQuick SOL Faucet Instructions:\n1. Copy your wallet address above\n2. Visit any of the faucet links\n3. Paste your address and request SOL\n4. Return here and refresh your balance`;
-    } else if (err.message.includes('connection') || err.message.includes('network')) {
-      errorMessage = 'Network connection failed. Please check your internet and try again.';
-    } else if (err.message.includes('keypair') || err.message.includes('generat')) {
-      errorMessage = 'Failed to generate wallet keys. Please try again.';
+      console.log("🌐 Step 2: Connecting to Solana...");
+      // Connect to Solana devnet with multiple RPC endpoints
+      const rpcEndpoints = [
+        'https://api.devnet.solana.com',
+        'https://devnet.helius-rpc.com/',
+        'https://solana-devnet.rpcpool.com/'
+      ];
+      
+      let connection;
+      let connectionError;
+      
+      // Try different RPC endpoints
+      for (const endpoint of rpcEndpoints) {
+        try {
+          connection = new Connection(endpoint, 'confirmed');
+          // Test the connection
+          await connection.getVersion();
+          console.log(`✅ Connected to RPC: ${endpoint}`);
+          break;
+        } catch (err) {
+          connectionError = err;
+          console.log(`❌ Failed to connect to ${endpoint}:`, err.message);
+          continue;
+        }
+      }
+      
+      if (!connection) {
+        throw new Error('All RPC endpoints failed. Please try again later.');
+      }
+
+      console.log("💰 Step 3: Checking balance...");
+      let balance = await connection.getBalance(keypair.publicKey);
+      console.log(`✅ Initial balance: ${balance / LAMPORTS_PER_SOL} SOL`);
+
+      // Automatic airdrop with retry logic
+      if (balance === 0) {
+        console.log("🔄 Step 3.5: Requesting automatic airdrop...");
+        
+        let airdropSuccess = false;
+        let lastAirdropError;
+        
+        // Try airdrop with multiple RPCs and retries
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          for (const endpoint of rpcEndpoints) {
+            try {
+              console.log(`🔄 Airdrop attempt ${attempt} on ${endpoint}...`);
+              const airdropConnection = new Connection(endpoint, 'confirmed');
+              
+              const signature = await airdropConnection.requestAirdrop(
+                keypair.publicKey,
+                0.1 * LAMPORTS_PER_SOL // Request 0.1 SOL to avoid rate limits
+              );
+              
+              // Wait for confirmation with timeout
+              console.log("⏳ Waiting for airdrop confirmation...");
+              const confirmation = await airdropConnection.confirmTransaction(signature, 'confirmed');
+              
+              if (confirmation.value.err) {
+                throw new Error(`Airdrop failed: ${JSON.stringify(confirmation.value.err)}`);
+              }
+              
+              console.log("✅ Airdrop completed successfully");
+              airdropSuccess = true;
+              break;
+              
+            } catch (airdropError) {
+              lastAirdropError = airdropError;
+              console.log(`❌ Airdrop failed on ${endpoint}:`, airdropError.message);
+              
+              // Wait before retry
+              await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+            }
+          }
+          if (airdropSuccess) break;
+        }
+        
+        if (!airdropSuccess) {
+          console.warn("⚠️ Automatic airdrop failed, but continuing with wallet creation");
+          // Don't throw error - continue with wallet creation even if airdrop fails
+          setError(`✅ Wallet created successfully!\n\n⚠️ Automatic SOL airdrop failed: ${lastAirdropError?.message}\n\n💰 You can get SOL manually from:\n• https://faucet.solana.com\n• https://solfaucet.com\n• Use the "Try Get SOL" button above`);
+        } else {
+          // Update balance after successful airdrop
+          balance = await connection.getBalance(keypair.publicKey);
+          console.log(`💰 New balance after airdrop: ${balance / LAMPORTS_PER_SOL} SOL`);
+          setError('✅ Wallet created successfully! 0.1 SOL airdropped to your wallet.');
+        }
+      } else {
+        setError(null);
+      }
+
+      console.log("🏦 Step 4: Creating token accounts...");
+      // Create token accounts for common collections - non-blocking
+      try {
+        await createTokenAccountsForWallet(connection, keypair);
+        console.log("✅ Token accounts process completed");
+      } catch (tokenError) {
+        console.log("⚠️ Token account creation had issues:", tokenError.message);
+        // Don't fail wallet creation if token accounts fail
+      }
+
+      console.log("💾 Step 5: Setting up wallet state...");
+      const newWallet = {
+        publicKey: publicKey,
+        secretKey: Array.from(keypair.secretKey),
+        keypair: keypair,
+        balance: balance / LAMPORTS_PER_SOL
+      };
+      
+      setWallet(newWallet);
+      setWalletBalance(balance / LAMPORTS_PER_SOL);
+      setWalletSecretKey(JSON.stringify(Array.from(keypair.secretKey)));
+      
+      console.log('🎉 Step 6: Wallet creation complete!');
+      
+    } catch (err) {
+      console.error('❌ Wallet creation failed:', err);
+      
+      // Provide specific error messages
+      let errorMessage = 'Failed to create wallet: ' + err.message;
+      
+      if (err.message.includes('429') || err.message.includes('rate limit')) {
+        errorMessage = `❌ Airdrop rate limit reached.\n\n💰 Please get test SOL from:\n• https://faucet.solana.com\n• https://solfaucet.com\n• Use the "Try Get SOL" button above\n\nQuick SOL Faucet Instructions:\n1. Copy your wallet address above\n2. Visit any of the faucet links\n3. Paste your address and request SOL\n4. Return here and refresh your balance`;
+      } else if (err.message.includes('connection') || err.message.includes('network')) {
+        errorMessage = 'Network connection failed. Please check your internet and try again.';
+      } else if (err.message.includes('keypair') || err.message.includes('generat')) {
+        errorMessage = 'Failed to generate wallet keys. Please try again.';
+      }
+      
+      setError(errorMessage);
+    } finally {
+      setIsCreatingWallet(false);
     }
-    
-    setError(errorMessage);
-  } finally {
-    setIsCreatingWallet(false);
-  }
-};
+  };
 
   // Download Wallet as JSON File
   const downloadWallet = () => {
@@ -303,7 +353,7 @@ const createNewWallet = async () => {
       
       if (result.success) {
         setMintResponse(result);
-        console.log('✅ Token minted and transferred successfully:', result.mint);
+        console.log('✅ Token minted and transferred successfully:', result.token.mint);
         
         // Refresh the NFT chain to show the new token
         setTimeout(() => {
@@ -743,50 +793,101 @@ const createNewWallet = async () => {
                     {wallet.publicKey}
                   </div>
                   
+                  {/* Updated Balance Section with Airdrop Button */}
                   <div style={{ 
                     display: 'flex', 
                     alignItems: 'center',
-                    justifyContent: 'space-between'
+                    justifyContent: 'space-between',
+                    marginBottom: '12px'
                   }}>
                     <div style={{ fontSize: '14px', color: mikoColors.textSecondary }}>
-                      Balance: <span style={{ color: mikoColors.success, fontWeight: '600' }}>
+                      Balance: <span style={{ 
+                        color: walletBalance > 0 ? mikoColors.success : mikoColors.warning, 
+                        fontWeight: '600' 
+                      }}>
                         {walletBalance.toFixed(4)} SOL
                       </span>
                     </div>
                     
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                    {walletBalance < 0.01 && (
                       <button
-                        onClick={() => copyToClipboard(wallet.publicKey)}
+                        onClick={requestManualAirdrop}
+                        disabled={loading}
                         style={{
                           padding: '6px 12px',
-                          background: mikoColors.primary,
-                          color: mikoColors.text,
-                          border: `1px solid ${mikoColors.border}`,
+                          background: mikoColors.accent,
+                          color: mikoColors.background,
+                          border: 'none',
                           borderRadius: '6px',
-                          cursor: 'pointer',
+                          cursor: loading ? 'not-allowed' : 'pointer',
                           fontSize: '12px',
-                          fontWeight: '600'
+                          fontWeight: '600',
+                          transition: 'all 0.3s ease'
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!loading) {
+                            e.target.style.transform = 'translateY(-1px)';
+                            e.target.style.boxShadow = `0 2px 8px ${mikoColors.accent}40`;
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!loading) {
+                            e.target.style.transform = 'translateY(0)';
+                            e.target.style.boxShadow = 'none';
+                          }
                         }}
                       >
-                        Copy
+                        {loading ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <div style={{
+                              width: '8px',
+                              height: '8px',
+                              border: `1px solid transparent`,
+                              borderTop: `1px solid ${mikoColors.background}`,
+                              borderRadius: '50%',
+                              animation: 'spin 1s linear infinite'
+                            }} />
+                            Requesting...
+                          </div>
+                        ) : (
+                          'Try Get SOL'
+                        )}
                       </button>
-                      
-                      <button
-                        onClick={disconnectWallet}
-                        style={{
-                          padding: '6px 12px',
-                          background: 'transparent',
-                          color: mikoColors.accent,
-                          border: `1px solid ${mikoColors.accent}`,
-                          borderRadius: '6px',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          fontWeight: '600'
-                        }}
-                      >
-                        Disconnect
-                      </button>
-                    </div>
+                    )}
+                  </div>
+                  
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => copyToClipboard(wallet.publicKey)}
+                      style={{
+                        padding: '6px 12px',
+                        background: mikoColors.primary,
+                        color: mikoColors.text,
+                        border: `1px solid ${mikoColors.border}`,
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: '600'
+                      }}
+                    >
+                      Copy
+                    </button>
+                    
+                    <button
+                      onClick={disconnectWallet}
+                      style={{
+                        padding: '6px 12px',
+                        background: 'transparent',
+                        color: mikoColors.accent,
+                        border: `1px solid ${mikoColors.accent}`,
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: '600'
+                      }}
+                    >
+                      Disconnect
+                    </button>
                   </div>
                 </div>
 
@@ -809,14 +910,6 @@ const createNewWallet = async () => {
                     alignItems: 'center',
                     justifyContent: 'center',
                     gap: '8px'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.target.style.transform = 'translateY(-2px)';
-                    e.target.style.boxShadow = '0 4px 12px rgba(76, 175, 80, 0.3)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.target.style.transform = 'translateY(0)';
-                    e.target.style.boxShadow = 'none';
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
