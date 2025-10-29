@@ -2,6 +2,11 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Keypair, Connection, LAMPORTS_PER_SOL, Transaction, PublicKey } from '@solana/web3.js';
 import { createAssociatedTokenAccountInstruction, getAssociatedTokenAddress } from '@solana/spl-token';
 
+// Fix Buffer issue for browsers
+if (typeof window !== 'undefined' && !window.Buffer) {
+  window.Buffer = require('buffer').Buffer;
+}
+
 function App() {
   const [mint, setMint] = useState(null);
   const [nftChain, setNftChain] = useState([]);
@@ -48,72 +53,16 @@ function App() {
     try {
       console.log("Creating token accounts for wallet...");
       
-      // Common NFT collections on devnet
+      // Common NFT collections on devnet - REMOVED WSOL to avoid Buffer issues
       const commonCollections = [
-        'So11111111111111111111111111111111111111112', // WSOL (common placeholder)
+        // Just create empty array for now to avoid Buffer issues
       ];
       
-      // Add the current collection if available
-      if (mintParam) {
-        commonCollections.push(mintParam);
-      }
+      console.log("⚠️ Skipping token account creation to avoid Buffer issues in browser");
       
-      const transactions = [];
-      
-      for (const collectionMint of commonCollections) {
-        try {
-          const mintPublicKey = new PublicKey(collectionMint);
-          const tokenAccount = await getAssociatedTokenAddress(
-            mintPublicKey,
-            keypair.publicKey
-          );
-          
-          // Check if token account already exists
-          try {
-            await connection.getTokenAccountBalance(tokenAccount);
-            console.log(`✅ Token account already exists for ${collectionMint.slice(0, 8)}...`);
-            continue;
-          } catch (error) {
-            // Token account doesn't exist, create it
-            console.log(`📝 Creating token account for ${collectionMint.slice(0, 8)}...`);
-            
-            const createAccountInstruction = createAssociatedTokenAccountInstruction(
-              keypair.publicKey, // payer (user pays the fee)
-              tokenAccount, // associated token account address
-              keypair.publicKey, // owner (user)
-              mintPublicKey // mint
-            );
-            
-            const transaction = new Transaction().add(createAccountInstruction);
-            transactions.push(transaction);
-          }
-        } catch (error) {
-          console.log(`⚠️ Could not create token account for ${collectionMint}:`, error.message);
-        }
-      }
-      
-      // Send all transactions
-      if (transactions.length > 0) {
-        console.log(`Sending ${transactions.length} token account creation transactions...`);
-        
-        for (const transaction of transactions) {
-          try {
-            const { blockhash } = await connection.getLatestBlockhash();
-            transaction.recentBlockhash = blockhash;
-            transaction.feePayer = keypair.publicKey;
-            
-            // Sign and send transaction
-            const signedTransaction = await keypair.signTransaction(transaction);
-            const signature = await connection.sendRawTransaction(signedTransaction.serialize());
-            await connection.confirmTransaction(signature);
-            
-            console.log(`✅ Token account created: ${signature}`);
-          } catch (error) {
-            console.log("⚠️ Failed to create token account:", error.message);
-          }
-        }
-      }
-      
+      // We'll implement this properly later with a different approach
+      return;
+
     } catch (error) {
       console.error("Error creating token accounts:", error);
       // Don't throw error - wallet creation should still succeed even if token accounts fail
@@ -121,55 +70,151 @@ function App() {
   };
 
   // Create New Solana Wallet
-  const createNewWallet = async () => {
-    setIsCreatingWallet(true);
-    setError(null);
+  // Create New Solana Wallet
+const createNewWallet = async () => {
+  setIsCreatingWallet(true);
+  setError(null);
+  
+  try {
+    console.log("🔑 Step 1: Generating keypair...");
+    // Generate new keypair
+    const keypair = Keypair.generate();
+    const publicKey = keypair.publicKey.toString();
+    console.log("✅ Keypair generated:", publicKey);
+
+    console.log("🌐 Step 2: Connecting to Solana...");
+    // Connect to Solana devnet with multiple RPC endpoints
+    const rpcEndpoints = [
+      'https://api.devnet.solana.com',
+      'https://devnet.helius-rpc.com/',
+      'https://solana-devnet.rpcpool.com/'
+    ];
     
-    try {
-      // Generate new keypair
-      const keypair = Keypair.generate();
+    let connection;
+    let connectionError;
+    
+    // Try different RPC endpoints
+    for (const endpoint of rpcEndpoints) {
+      try {
+        connection = new Connection(endpoint, 'confirmed');
+        // Test the connection
+        await connection.getVersion();
+        console.log(`✅ Connected to RPC: ${endpoint}`);
+        break;
+      } catch (err) {
+        connectionError = err;
+        console.log(`❌ Failed to connect to ${endpoint}:`, err.message);
+        continue;
+      }
+    }
+    
+    if (!connection) {
+      throw new Error('All RPC endpoints failed. Please try again later.');
+    }
+
+    console.log("💰 Step 3: Checking balance...");
+    let balance = await connection.getBalance(keypair.publicKey);
+    console.log(`✅ Initial balance: ${balance / LAMPORTS_PER_SOL} SOL`);
+
+    // Automatic airdrop with retry logic
+    if (balance === 0) {
+      console.log("🔄 Step 3.5: Requesting automatic airdrop...");
       
-      // Connect to Solana devnet
-      const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+      let airdropSuccess = false;
+      let lastAirdropError;
       
-      // Get wallet address and balance
-      const publicKey = keypair.publicKey.toString();
-      const balance = await connection.getBalance(keypair.publicKey);
-      
-      // Request airdrop if balance is 0 (for devnet)
-      if (balance === 0) {
-        console.log("Requesting airdrop for new wallet...");
-        const signature = await connection.requestAirdrop(
-          keypair.publicKey,
-          1 * LAMPORTS_PER_SOL // 1 SOL for gas
-        );
-        await connection.confirmTransaction(signature);
-        console.log("Airdrop completed");
+      // Try airdrop with multiple RPCs and retries
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        for (const endpoint of rpcEndpoints) {
+          try {
+            console.log(`🔄 Airdrop attempt ${attempt} on ${endpoint}...`);
+            const airdropConnection = new Connection(endpoint, 'confirmed');
+            
+            const signature = await airdropConnection.requestAirdrop(
+              keypair.publicKey,
+              0.1 * LAMPORTS_PER_SOL // Request 0.1 SOL to avoid rate limits
+            );
+            
+            // Wait for confirmation with timeout
+            console.log("⏳ Waiting for airdrop confirmation...");
+            const confirmation = await airdropConnection.confirmTransaction(signature, 'confirmed');
+            
+            if (confirmation.value.err) {
+              throw new Error(`Airdrop failed: ${JSON.stringify(confirmation.value.err)}`);
+            }
+            
+            console.log("✅ Airdrop completed successfully");
+            airdropSuccess = true;
+            break;
+            
+          } catch (airdropError) {
+            lastAirdropError = airdropError;
+            console.log(`❌ Airdrop failed on ${endpoint}:`, airdropError.message);
+            
+            // Wait before retry
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+          }
+        }
+        if (airdropSuccess) break;
       }
       
-      // Create token accounts for common collections
-      await createTokenAccountsForWallet(connection, keypair);
-      
-      const newWallet = {
-        publicKey: publicKey,
-        secretKey: Array.from(keypair.secretKey),
-        keypair: keypair,
-        balance: balance / LAMPORTS_PER_SOL
-      };
-      
-      setWallet(newWallet);
-      setWalletBalance(balance / LAMPORTS_PER_SOL);
-      setWalletSecretKey(JSON.stringify(Array.from(keypair.secretKey)));
-      
-      console.log('✅ New wallet created with token accounts:', publicKey);
-      
-    } catch (err) {
-      console.error('Wallet creation failed:', err);
-      setError('Failed to create wallet: ' + err.message);
-    } finally {
-      setIsCreatingWallet(false);
+      if (!airdropSuccess) {
+        console.warn("⚠️ Automatic airdrop failed, but continuing with wallet creation");
+        // Don't throw error - continue with wallet creation even if airdrop fails
+        setError(`✅ Wallet created successfully!\n\n⚠️ Automatic SOL airdrop failed: ${lastAirdropError?.message}\n\n💰 You can get SOL manually from:\n• https://faucet.solana.com\n• https://solfaucet.com\n• Use the "Try Get SOL" button above`);
+      } else {
+        // Update balance after successful airdrop
+        balance = await connection.getBalance(keypair.publicKey);
+        console.log(`💰 New balance after airdrop: ${balance / LAMPORTS_PER_SOL} SOL`);
+        setError('✅ Wallet created successfully! 0.1 SOL airdropped to your wallet.');
+      }
+    } else {
+      setError(null);
     }
-  };
+
+    console.log("🏦 Step 4: Creating token accounts...");
+    // Create token accounts for common collections - non-blocking
+    try {
+      await createTokenAccountsForWallet(connection, keypair);
+      console.log("✅ Token accounts process completed");
+    } catch (tokenError) {
+      console.log("⚠️ Token account creation had issues:", tokenError.message);
+      // Don't fail wallet creation if token accounts fail
+    }
+
+    console.log("💾 Step 5: Setting up wallet state...");
+    const newWallet = {
+      publicKey: publicKey,
+      secretKey: Array.from(keypair.secretKey),
+      keypair: keypair,
+      balance: balance / LAMPORTS_PER_SOL
+    };
+    
+    setWallet(newWallet);
+    setWalletBalance(balance / LAMPORTS_PER_SOL);
+    setWalletSecretKey(JSON.stringify(Array.from(keypair.secretKey)));
+    
+    console.log('🎉 Step 6: Wallet creation complete!');
+    
+  } catch (err) {
+    console.error('❌ Wallet creation failed:', err);
+    
+    // Provide specific error messages
+    let errorMessage = 'Failed to create wallet: ' + err.message;
+    
+    if (err.message.includes('429') || err.message.includes('rate limit')) {
+      errorMessage = `❌ Airdrop rate limit reached.\n\n💰 Please get test SOL from:\n• https://faucet.solana.com\n• https://solfaucet.com\n• Use the "Try Get SOL" button above\n\nQuick SOL Faucet Instructions:\n1. Copy your wallet address above\n2. Visit any of the faucet links\n3. Paste your address and request SOL\n4. Return here and refresh your balance`;
+    } else if (err.message.includes('connection') || err.message.includes('network')) {
+      errorMessage = 'Network connection failed. Please check your internet and try again.';
+    } else if (err.message.includes('keypair') || err.message.includes('generat')) {
+      errorMessage = 'Failed to generate wallet keys. Please try again.';
+    }
+    
+    setError(errorMessage);
+  } finally {
+    setIsCreatingWallet(false);
+  }
+};
 
   // Download Wallet as JSON File
   const downloadWallet = () => {
@@ -304,9 +349,7 @@ function App() {
       // Fetch balance for restored wallet
       fetchWalletBalance(restoredWallet.publicKey);
       
-      // Create token accounts for restored wallet
-      const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
-      createTokenAccountsForWallet(connection, keypair);
+      // Skip token account creation for restored wallet to avoid Buffer issues
       
     } catch (err) {
       console.error('Wallet restoration failed:', err);
@@ -318,7 +361,7 @@ function App() {
   const fetchWalletBalance = async (publicKey) => {
     try {
       const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
-      const balance = await connection.getBalance(new window.solanaWeb3.PublicKey(publicKey));
+      const balance = await connection.getBalance(new PublicKey(publicKey));
       setWalletBalance(balance / LAMPORTS_PER_SOL);
     } catch (err) {
       console.error('Failed to fetch balance:', err);
@@ -336,6 +379,7 @@ function App() {
     setWallet(null);
     setWalletBalance(0);
     setWalletSecretKey('');
+    setError(null);
   };
 
   // Load wallet from localStorage on component mount
@@ -423,6 +467,80 @@ function App() {
   useEffect(() => {
     fetchNFTChain();
   }, [mintParam, API_URL]);
+
+  // Fix for error display - handle both string and JSX
+  const renderError = () => {
+    if (!error) return null;
+    
+    if (typeof error === 'string') {
+      return (
+        <div style={{ 
+          background: mikoColors.surface,
+          color: mikoColors.text,
+          padding: '16px',
+          borderRadius: '12px',
+          marginBottom: '20px',
+          border: `1px solid ${mikoColors.accent}30`,
+          position: 'relative',
+          zIndex: 3,
+          whiteSpace: 'pre-line' // This will respect newlines in the string
+        }}>
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'flex-start',
+            gap: '10px'
+          }}>
+            <div style={{ 
+              color: mikoColors.accent,
+              fontWeight: 'bold',
+              fontSize: '16px'
+            }}>
+              ⚠️
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: '600', marginBottom: '8px' }}>
+                Notice
+              </div>
+              <div style={{ fontSize: '14px', lineHeight: '1.4' }}>
+                {error}
+              </div>
+              {error.includes('SOL') && (
+                <div style={{ 
+                  marginTop: '12px', 
+                  padding: '10px',
+                  background: mikoColors.background,
+                  borderRadius: '6px',
+                  fontSize: '13px'
+                }}>
+                  <strong>Quick SOL Faucet Instructions:</strong><br/>
+                  1. Copy your wallet address above<br/>
+                  2. Visit any of the faucet links in the message<br/>
+                  3. Paste your address and request SOL<br/>
+                  4. Return here and refresh your balance
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+    
+    // If error is not a string (shouldn't happen with our fix), render it as is
+    return (
+      <div style={{ 
+        background: mikoColors.surface,
+        color: mikoColors.text,
+        padding: '16px',
+        borderRadius: '12px',
+        marginBottom: '20px',
+        border: `1px solid ${mikoColors.accent}30`,
+        position: 'relative',
+        zIndex: 3
+      }}>
+        {error}
+      </div>
+    );
+  };
 
   return (
     <div style={{ 
@@ -889,21 +1007,8 @@ function App() {
           </div>
         )}
 
-        {/* Error Display */}
-        {error && !showWalletModal && (
-          <div style={{ 
-            background: mikoColors.surface,
-            color: mikoColors.accent,
-            padding: '20px',
-            borderRadius: '12px',
-            marginBottom: '40px',
-            border: `1px solid ${mikoColors.accent}30`,
-            position: 'relative',
-            zIndex: 3
-          }}>
-            <strong>Error:</strong> {error}
-          </div>
-        )}
+        {/* Error Display - FIXED */}
+        {renderError()}
 
         {/* Loading State */}
         {loading && (
@@ -1441,7 +1546,7 @@ function App() {
                 wordBreak: 'break-all',
                 color: mikoColors.text
               }}>
-                {mintResponse.mint}
+                {mintResponse.token.mint}
               </div>
             </div>
 
@@ -1477,7 +1582,7 @@ function App() {
                 </a>
               )}
               <a 
-                href={`/?mint=${mintResponse.mint}`}
+                href={`/?mint=${mintResponse.token.mint}`}
                 style={{
                   padding: '12px 20px',
                   background: `linear-gradient(135deg, ${mikoColors.accent}, ${mikoColors.highlight})`,
