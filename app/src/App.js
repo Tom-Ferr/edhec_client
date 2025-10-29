@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { Keypair, Connection, LAMPORTS_PER_SOL, Transaction, PublicKey } from '@solana/web3.js';
+import { createAssociatedTokenAccountInstruction, getAssociatedTokenAddress } from '@solana/spl-token';
 
 function App() {
   const [mint, setMint] = useState(null);
@@ -6,12 +8,17 @@ function App() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selectedNft, setSelectedNft] = useState(null);
-  const [scrollY, setScrollY] = useState(0);
 
-  const [imageFile, setImageFile] = useState(null);
-  const [extraFile, setExtraFile] = useState(null);
-  const [uploadResponse, setUploadResponse] = useState(null);
-  const [uploading, setUploading] = useState(false);
+  // Wallet State
+  const [wallet, setWallet] = useState(null);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [isCreatingWallet, setIsCreatingWallet] = useState(false);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [walletSecretKey, setWalletSecretKey] = useState('');
+
+  // Token Minting State
+  const [minting, setMinting] = useState(false);
+  const [mintResponse, setMintResponse] = useState(null);
 
   const timelineRef = useRef(null);
   const nftRefs = useRef([]);
@@ -22,40 +29,338 @@ function App() {
 
   // Enhanced Miko color palette
   const mikoColors = {
-    primary: '#2A2D43',     // Sophisticated dark blue
-    secondary: '#4A4E69',   // Medium blue
-    accent: '#F25F5C',      // Miko coral
-    highlight: '#FFE74C',   // Miko yellow
-    background: '#1A1C2B',  // Deep background
-    surface: '#2D3047',     // Card surface
-    lightSurface: '#3A3E5B', // Hover state
+    primary: '#2A2D43',
+    secondary: '#4A4E69',
+    accent: '#F25F5C',
+    highlight: '#FFE74C',
+    background: '#1A1C2B',
+    surface: '#2D3047',
+    lightSurface: '#3A3E5B',
     text: '#FFFFFF',
     textSecondary: '#B8BBD5',
-    border: '#3A3E5B'
+    border: '#3A3E5B',
+    success: '#4CAF50',
+    warning: '#FF9800'
   };
 
-  // Smooth parallax scroll handler
-  useEffect(() => {
-    const handleScroll = () => {
-      setScrollY(window.scrollY);
-    };
-
-    let ticking = false;
-    const updateScroll = () => {
-      handleScroll();
-      ticking = false;
-    };
-
-    const onScroll = () => {
-      if (!ticking) {
-        requestAnimationFrame(updateScroll);
-        ticking = true;
+  // Helper function to create token accounts for a wallet
+  const createTokenAccountsForWallet = async (connection, keypair) => {
+    try {
+      console.log("Creating token accounts for wallet...");
+      
+      // Common NFT collections on devnet
+      const commonCollections = [
+        'So11111111111111111111111111111111111111112', // WSOL (common placeholder)
+      ];
+      
+      // Add the current collection if available
+      if (mintParam) {
+        commonCollections.push(mintParam);
       }
-    };
+      
+      const transactions = [];
+      
+      for (const collectionMint of commonCollections) {
+        try {
+          const mintPublicKey = new PublicKey(collectionMint);
+          const tokenAccount = await getAssociatedTokenAddress(
+            mintPublicKey,
+            keypair.publicKey
+          );
+          
+          // Check if token account already exists
+          try {
+            await connection.getTokenAccountBalance(tokenAccount);
+            console.log(`✅ Token account already exists for ${collectionMint.slice(0, 8)}...`);
+            continue;
+          } catch (error) {
+            // Token account doesn't exist, create it
+            console.log(`📝 Creating token account for ${collectionMint.slice(0, 8)}...`);
+            
+            const createAccountInstruction = createAssociatedTokenAccountInstruction(
+              keypair.publicKey, // payer (user pays the fee)
+              tokenAccount, // associated token account address
+              keypair.publicKey, // owner (user)
+              mintPublicKey // mint
+            );
+            
+            const transaction = new Transaction().add(createAccountInstruction);
+            transactions.push(transaction);
+          }
+        } catch (error) {
+          console.log(`⚠️ Could not create token account for ${collectionMint}:`, error.message);
+        }
+      }
+      
+      // Send all transactions
+      if (transactions.length > 0) {
+        console.log(`Sending ${transactions.length} token account creation transactions...`);
+        
+        for (const transaction of transactions) {
+          try {
+            const { blockhash } = await connection.getLatestBlockhash();
+            transaction.recentBlockhash = blockhash;
+            transaction.feePayer = keypair.publicKey;
+            
+            // Sign and send transaction
+            const signedTransaction = await keypair.signTransaction(transaction);
+            const signature = await connection.sendRawTransaction(signedTransaction.serialize());
+            await connection.confirmTransaction(signature);
+            
+            console.log(`✅ Token account created: ${signature}`);
+          } catch (error) {
+            console.log("⚠️ Failed to create token account:", error.message);
+          }
+        }
+      }
+      
+    } catch (error) {
+      console.error("Error creating token accounts:", error);
+      // Don't throw error - wallet creation should still succeed even if token accounts fail
+    }
+  };
 
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
+  // Create New Solana Wallet
+  const createNewWallet = async () => {
+    setIsCreatingWallet(true);
+    setError(null);
+    
+    try {
+      // Generate new keypair
+      const keypair = Keypair.generate();
+      
+      // Connect to Solana devnet
+      const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+      
+      // Get wallet address and balance
+      const publicKey = keypair.publicKey.toString();
+      const balance = await connection.getBalance(keypair.publicKey);
+      
+      // Request airdrop if balance is 0 (for devnet)
+      if (balance === 0) {
+        console.log("Requesting airdrop for new wallet...");
+        const signature = await connection.requestAirdrop(
+          keypair.publicKey,
+          1 * LAMPORTS_PER_SOL // 1 SOL for gas
+        );
+        await connection.confirmTransaction(signature);
+        console.log("Airdrop completed");
+      }
+      
+      // Create token accounts for common collections
+      await createTokenAccountsForWallet(connection, keypair);
+      
+      const newWallet = {
+        publicKey: publicKey,
+        secretKey: Array.from(keypair.secretKey),
+        keypair: keypair,
+        balance: balance / LAMPORTS_PER_SOL
+      };
+      
+      setWallet(newWallet);
+      setWalletBalance(balance / LAMPORTS_PER_SOL);
+      setWalletSecretKey(JSON.stringify(Array.from(keypair.secretKey)));
+      
+      console.log('✅ New wallet created with token accounts:', publicKey);
+      
+    } catch (err) {
+      console.error('Wallet creation failed:', err);
+      setError('Failed to create wallet: ' + err.message);
+    } finally {
+      setIsCreatingWallet(false);
+    }
+  };
+
+  // Download Wallet as JSON File
+  const downloadWallet = () => {
+    if (!wallet) return;
+
+    try {
+      // Create wallet data object
+      const walletData = {
+        publicKey: wallet.publicKey,
+        secretKey: wallet.secretKey,
+        network: 'devnet',
+        createdAt: new Date().toISOString(),
+        provider: 'Miko Timeline Wallet'
+      };
+
+      // Create blob and download link
+      const blob = new Blob([JSON.stringify(walletData, null, 2)], { 
+        type: 'application/json' 
+      });
+      
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `miko-wallet-${wallet.publicKey.slice(0, 8)}.json`;
+      
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      console.log('✅ Wallet downloaded successfully');
+      
+    } catch (err) {
+      console.error('Wallet download failed:', err);
+      setError('Failed to download wallet: ' + err.message);
+    }
+  };
+
+  // Get Token - Mint and transfer to user's wallet
+  const getToken = async () => {
+    if (!wallet) {
+      setError('Please connect your wallet first');
+      return;
+    }
+
+    if (!mintParam) {
+      setError('No collection found. Please provide a mint address via ?mint=<address>');
+      return;
+    }
+
+    setMinting(true);
+    setError(null);
+    setMintResponse(null);
+
+    try {
+      // Prepare token data
+      const tokenData = {
+        userWallet: wallet.publicKey,
+        collectionMint: mintParam,
+        name: `Miko Token #${nftChain.length + 1}`,
+        symbol: 'MIKO',
+        description: `A unique token from the Miko collection - Generation ${nftChain.length + 1}`,
+        collectionData: nftChain.length > 0 ? {
+          previousMint: nftChain[nftChain.length - 1].mint,
+          generation: nftChain.length + 1
+        } : null
+      };
+
+      console.log('Minting token with data:', tokenData);
+
+      // Call server to mint and transfer token
+      const response = await fetch(`${API_URL}/mint-token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(tokenData)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Server error: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success) {
+        setMintResponse(result);
+        console.log('✅ Token minted and transferred successfully:', result.mint);
+        
+        // Refresh the NFT chain to show the new token
+        setTimeout(() => {
+          fetchNFTChain();
+        }, 2000);
+      } else {
+        throw new Error(result.error || 'Failed to mint token');
+      }
+
+    } catch (err) {
+      console.error('Token minting failed:', err);
+      setError(err.message);
+    } finally {
+      setMinting(false);
+    }
+  };
+
+  // Restore Wallet from Secret Key
+  const restoreWallet = () => {
+    if (!walletSecretKey.trim()) {
+      setError('Please enter a valid secret key');
+      return;
+    }
+
+    try {
+      const secretKeyArray = JSON.parse(walletSecretKey);
+      const secretKey = Uint8Array.from(secretKeyArray);
+      const keypair = Keypair.fromSecretKey(secretKey);
+      
+      const restoredWallet = {
+        publicKey: keypair.publicKey.toString(),
+        secretKey: Array.from(keypair.secretKey),
+        keypair: keypair
+      };
+      
+      setWallet(restoredWallet);
+      setShowWalletModal(false);
+      setWalletSecretKey('');
+      setError(null);
+      
+      console.log('✅ Wallet restored:', restoredWallet.publicKey);
+      
+      // Fetch balance for restored wallet
+      fetchWalletBalance(restoredWallet.publicKey);
+      
+      // Create token accounts for restored wallet
+      const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+      createTokenAccountsForWallet(connection, keypair);
+      
+    } catch (err) {
+      console.error('Wallet restoration failed:', err);
+      setError('Invalid secret key format');
+    }
+  };
+
+  // Fetch Wallet Balance
+  const fetchWalletBalance = async (publicKey) => {
+    try {
+      const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+      const balance = await connection.getBalance(new window.solanaWeb3.PublicKey(publicKey));
+      setWalletBalance(balance / LAMPORTS_PER_SOL);
+    } catch (err) {
+      console.error('Failed to fetch balance:', err);
+    }
+  };
+
+  // Copy to Clipboard
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    // You could add a toast notification here
+  };
+
+  // Disconnect Wallet
+  const disconnectWallet = () => {
+    setWallet(null);
+    setWalletBalance(0);
+    setWalletSecretKey('');
+  };
+
+  // Load wallet from localStorage on component mount
+  useEffect(() => {
+    const savedWallet = localStorage.getItem('mikoWallet');
+    if (savedWallet) {
+      try {
+        const walletData = JSON.parse(savedWallet);
+        setWallet(walletData);
+        fetchWalletBalance(walletData.publicKey);
+      } catch (err) {
+        console.error('Failed to load saved wallet:', err);
+        localStorage.removeItem('mikoWallet');
+      }
+    }
   }, []);
+
+  // Save wallet to localStorage when it changes
+  useEffect(() => {
+    if (wallet) {
+      localStorage.setItem('mikoWallet', JSON.stringify(wallet));
+    } else {
+      localStorage.removeItem('mikoWallet');
+    }
+  }, [wallet]);
 
   // Intersection Observer for scroll-based data display
   useEffect(() => {
@@ -71,12 +376,11 @@ function App() {
         });
       },
       {
-        threshold: 0.6, // Show data when 60% of card is visible
-        rootMargin: '-100px 0px -100px 0px' // Adjust trigger area
+        threshold: 0.6,
+        rootMargin: '-100px 0px -100px 0px'
       }
     );
 
-    // Observe all NFT cards
     nftRefs.current.forEach((ref) => {
       if (ref) observer.observe(ref);
     });
@@ -90,84 +394,35 @@ function App() {
   const queryParams = new URLSearchParams(window.location.search);
   const mintParam = queryParams.get('mint');
 
-  useEffect(() => {
+  const fetchNFTChain = async () => {
     if (!mintParam) {
       setError('Please provide a mint address via ?mint=<address>');
       return;
     }
     setMint(mintParam);
-
-    const fetchNFTChain = async () => {
-      setLoading(true);
-      try {
-        // Use environment variable for API URL
-        const resp = await fetch(`${API_URL}/nft-chain?mint=${mintParam}`);
-        if (!resp.ok) throw new Error(`Server responded with status ${resp.status}`);
-        const data = await resp.json();
-        
-        if (data.success) {
-          setNftChain(data.chain);
-        } else {
-          throw new Error(data.error || 'Failed to fetch NFT chain');
-        }
-      } catch (err) {
-        console.error(err);
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchNFTChain();
-  }, [mintParam, API_URL]);
-
-  // Upload files and mint NFT
-  const handleUpload = async () => {
-    if (!imageFile) return alert("Image file is required");
-    setUploading(true);
-    setUploadResponse(null);
-    setError(null);
+    setLoading(true);
 
     try {
-      const formData = new FormData();
-      formData.append("image", imageFile);
-      formData.append("name", "Miko NFT");
-      formData.append("symbol", "MIKO");
-      formData.append("description", "Miko collection NFT");
-      formData.append("prev", mintParam);
-      formData.append("collection_id", "MK_43");
-      if (extraFile) formData.append("extraFile", extraFile);
-
-      // Use environment variable for API URL
-      const resp = await fetch(`${API_URL}/upload-and-mint`, {
-        method: "POST",
-        body: formData
-      });
-
-      if (!resp.ok) {
-        const errorData = await resp.json();
-        throw new Error(errorData.error || `Server error: ${resp.status}`);
-      }
-
+      const resp = await fetch(`${API_URL}/nft-chain?mint=${mintParam}`);
+      if (!resp.ok) throw new Error(`Server responded with status ${resp.status}`);
       const data = await resp.json();
-      setUploadResponse(data);
       
-      console.log("NFT minted successfully:", data.mint);
-      
+      if (data.success) {
+        setNftChain(data.chain);
+      } else {
+        throw new Error(data.error || 'Failed to fetch NFT chain');
+      }
     } catch (err) {
-      console.error("Upload failed:", err);
+      console.error(err);
       setError(err.message);
     } finally {
-      setUploading(false);
+      setLoading(false);
     }
   };
 
-  // Improved parallax effect for timeline
-  const getParallaxOffset = (index) => {
-    const speed = 0.15;
-    const elementOffset = index * 50;
-    return (scrollY * speed) - elementOffset;
-  };
+  useEffect(() => {
+    fetchNFTChain();
+  }, [mintParam, API_URL]);
 
   return (
     <div style={{ 
@@ -179,7 +434,7 @@ function App() {
       overflowX: 'hidden'
     }}>
       
-      {/* Subtle Parallax Background Elements */}
+      {/* Static Background Elements */}
       <div style={{
         position: 'fixed',
         top: 0,
@@ -189,10 +444,9 @@ function App() {
         zIndex: 0,
         opacity: 0.6
       }}>
-        {/* Moving background shapes with parallax */}
         <div style={{
           position: 'absolute',
-          top: `${20 + scrollY * 0.05}%`,
+          top: '20%',
           left: '10%',
           width: '300px',
           height: '300px',
@@ -202,7 +456,7 @@ function App() {
         }} />
         <div style={{
           position: 'absolute',
-          top: `${60 - scrollY * 0.03}%`,
+          top: '60%',
           right: '5%',
           width: '400px',
           height: '400px',
@@ -212,7 +466,7 @@ function App() {
         }} />
         <div style={{
           position: 'absolute',
-          top: `${40 + scrollY * 0.02}%`,
+          top: '40%',
           left: '50%',
           width: '200px',
           height: '200px',
@@ -231,7 +485,7 @@ function App() {
         zIndex: 2
       }}>
         
-        {/* Header */}
+        {/* Header with Wallet Section */}
         <header style={{ 
           textAlign: 'center',
           marginBottom: isMobile ? '60px' : '100px',
@@ -265,18 +519,378 @@ function App() {
           <p style={{ 
             fontSize: isMobile ? '1.1rem' : '1.4rem', 
             color: mikoColors.textSecondary,
-            margin: 0,
+            margin: '0 auto 40px',
             fontWeight: '300',
-            maxWidth: '600px',
-            margin: '0 auto',
-            position: 'relative'
+            maxWidth: '600px'
           }}>
             Explore the evolution of digital collectibles
           </p>
+
+          {/* Wallet Section */}
+          <div style={{
+            background: mikoColors.surface,
+            borderRadius: '16px',
+            padding: '24px',
+            maxWidth: '500px',
+            margin: '0 auto',
+            border: `1px solid ${mikoColors.border}`,
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)'
+          }}>
+            {!wallet ? (
+              <div style={{ textAlign: 'center' }}>
+                <h3 style={{ 
+                  margin: '0 0 16px 0',
+                  color: mikoColors.text,
+                  fontSize: '1.2rem'
+                }}>
+                  Connect Your Wallet
+                </h3>
+                <p style={{ 
+                  color: mikoColors.textSecondary,
+                  marginBottom: '24px',
+                  fontSize: '0.9rem'
+                }}>
+                  Create a new wallet or restore an existing one to get started
+                </p>
+                
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+                  <button
+                    onClick={createNewWallet}
+                    disabled={isCreatingWallet}
+                    style={{
+                      padding: '12px 24px',
+                      background: `linear-gradient(135deg, ${mikoColors.accent}, ${mikoColors.highlight})`,
+                      color: mikoColors.background,
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: isCreatingWallet ? 'not-allowed' : 'pointer',
+                      fontWeight: '600',
+                      fontSize: '14px',
+                      transition: 'all 0.3s ease'
+                    }}
+                  >
+                    {isCreatingWallet ? 'Creating...' : 'Create New Wallet'}
+                  </button>
+                  
+                  <button
+                    onClick={() => setShowWalletModal(true)}
+                    style={{
+                      padding: '12px 24px',
+                      background: 'transparent',
+                      color: mikoColors.text,
+                      border: `1px solid ${mikoColors.border}`,
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontWeight: '600',
+                      fontSize: '14px',
+                      transition: 'all 0.3s ease'
+                    }}
+                  >
+                    Restore Wallet
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ textAlign: 'center' }}>
+                <h3 style={{ 
+                  margin: '0 0 16px 0',
+                  color: mikoColors.text,
+                  fontSize: '1.2rem'
+                }}>
+                  Your Wallet
+                </h3>
+                
+                <div style={{
+                  background: mikoColors.background,
+                  padding: '16px',
+                  borderRadius: '8px',
+                  marginBottom: '16px',
+                  border: `1px solid ${mikoColors.border}`
+                }}>
+                  <div style={{ 
+                    fontSize: '12px',
+                    color: mikoColors.textSecondary,
+                    marginBottom: '8px',
+                    fontWeight: '600'
+                  }}>
+                    PUBLIC KEY
+                  </div>
+                  <div style={{ 
+                    fontSize: '14px',
+                    fontFamily: 'monospace',
+                    wordBreak: 'break-all',
+                    color: mikoColors.text,
+                    marginBottom: '12px'
+                  }}>
+                    {wallet.publicKey}
+                  </div>
+                  
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <div style={{ fontSize: '14px', color: mikoColors.textSecondary }}>
+                      Balance: <span style={{ color: mikoColors.success, fontWeight: '600' }}>
+                        {walletBalance.toFixed(4)} SOL
+                      </span>
+                    </div>
+                    
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => copyToClipboard(wallet.publicKey)}
+                        style={{
+                          padding: '6px 12px',
+                          background: mikoColors.primary,
+                          color: mikoColors.text,
+                          border: `1px solid ${mikoColors.border}`,
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '12px',
+                          fontWeight: '600'
+                        }}
+                      >
+                        Copy
+                      </button>
+                      
+                      <button
+                        onClick={disconnectWallet}
+                        style={{
+                          padding: '6px 12px',
+                          background: 'transparent',
+                          color: mikoColors.accent,
+                          border: `1px solid ${mikoColors.accent}`,
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontSize: '12px',
+                          fontWeight: '600'
+                        }}
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Download Wallet Button */}
+                <button
+                  onClick={downloadWallet}
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    background: `linear-gradient(135deg, ${mikoColors.success}, ${mikoColors.highlight})`,
+                    color: mikoColors.background,
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                    fontSize: '14px',
+                    marginBottom: '12px',
+                    transition: 'all 0.3s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.target.style.transform = 'translateY(-2px)';
+                    e.target.style.boxShadow = '0 4px 12px rgba(76, 175, 80, 0.3)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.target.style.transform = 'translateY(0)';
+                    e.target.style.boxShadow = 'none';
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                  Download Wallet Backup
+                </button>
+                
+                <div style={{ 
+                  fontSize: '11px',
+                  color: mikoColors.textSecondary,
+                  textAlign: 'left',
+                  background: mikoColors.background,
+                  padding: '12px',
+                  borderRadius: '6px',
+                  border: `1px solid ${mikoColors.warning}30`
+                }}>
+                  ⚠️ Save your wallet backup file securely. This contains your private keys and is required to restore your wallet.
+                </div>
+              </div>
+            )}
+          </div>
         </header>
 
+        {/* Restore Wallet Modal */}
+        {showWalletModal && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.8)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '20px'
+          }}>
+            <div style={{
+              background: mikoColors.surface,
+              borderRadius: '16px',
+              padding: '24px',
+              maxWidth: '500px',
+              width: '100%',
+              border: `1px solid ${mikoColors.border}`,
+              boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+            }}>
+              <h3 style={{ 
+                margin: '0 0 16px 0',
+                color: mikoColors.text,
+                fontSize: '1.3rem'
+              }}>
+                Restore Wallet
+              </h3>
+              
+              <p style={{ 
+                color: mikoColors.textSecondary,
+                marginBottom: '20px',
+                fontSize: '0.9rem'
+              }}>
+                Paste your secret key array to restore your wallet, or upload a wallet backup file
+              </p>
+
+              {/* File Upload Option */}
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ 
+                  display: 'block', 
+                  marginBottom: '8px', 
+                  fontWeight: '500', 
+                  color: mikoColors.text,
+                  fontSize: '14px'
+                }}>
+                  Upload Wallet Backup File
+                </label>
+                <input 
+                  type="file" 
+                  accept=".json"
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = (event) => {
+                        try {
+                          const walletData = JSON.parse(event.target.result);
+                          if (walletData.secretKey && walletData.publicKey) {
+                            setWalletSecretKey(JSON.stringify(walletData.secretKey));
+                          } else {
+                            setError('Invalid wallet file format');
+                          }
+                        } catch (err) {
+                          setError('Failed to read wallet file');
+                        }
+                      };
+                      reader.readAsText(file);
+                    }
+                  }}
+                  style={{ 
+                    padding: '12px',
+                    border: `1px solid ${mikoColors.border}`,
+                    borderRadius: '8px',
+                    width: '100%',
+                    background: mikoColors.background,
+                    color: mikoColors.text,
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+
+              <div style={{ textAlign: 'center', marginBottom: '16px', color: mikoColors.textSecondary }}>
+                or
+              </div>
+              
+              <textarea
+                value={walletSecretKey}
+                onChange={(e) => setWalletSecretKey(e.target.value)}
+                placeholder='Paste secret key array (e.g., [123, 45, 67, ...])'
+                style={{
+                  width: '100%',
+                  minHeight: '100px',
+                  padding: '12px',
+                  background: mikoColors.background,
+                  border: `1px solid ${mikoColors.border}`,
+                  borderRadius: '8px',
+                  color: mikoColors.text,
+                  fontSize: '14px',
+                  fontFamily: 'monospace',
+                  resize: 'vertical',
+                  marginBottom: '20px'
+                }}
+              />
+              
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => {
+                    setShowWalletModal(false);
+                    setWalletSecretKey('');
+                    setError(null);
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    background: 'transparent',
+                    color: mikoColors.textSecondary,
+                    border: `1px solid ${mikoColors.border}`,
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                    fontSize: '14px'
+                  }}
+                >
+                  Cancel
+                </button>
+                
+                <button
+                  onClick={restoreWallet}
+                  disabled={!walletSecretKey.trim()}
+                  style={{
+                    padding: '10px 20px',
+                    background: walletSecretKey.trim() ? mikoColors.accent : mikoColors.border,
+                    color: mikoColors.background,
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: walletSecretKey.trim() ? 'pointer' : 'not-allowed',
+                    fontWeight: '600',
+                    fontSize: '14px'
+                  }}
+                >
+                  Restore Wallet
+                </button>
+              </div>
+              
+              {error && (
+                <div style={{
+                  color: mikoColors.accent,
+                  fontSize: '12px',
+                  marginTop: '12px',
+                  padding: '8px',
+                  background: mikoColors.background,
+                  borderRadius: '4px',
+                  border: `1px solid ${mikoColors.accent}30`
+                }}>
+                  {error}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Error Display */}
-        {error && (
+        {error && !showWalletModal && (
           <div style={{ 
             background: mikoColors.surface,
             color: mikoColors.accent,
@@ -323,7 +937,7 @@ function App() {
           </div>
         )}
 
-        {/* NFT Timeline with Parallax */}
+        {/* NFT Timeline without Parallax */}
         {nftChain.length > 0 && (
           <section 
             ref={timelineRef}
@@ -356,7 +970,7 @@ function App() {
               }} />
             </div>
 
-            {/* Timeline Center Line - CLEAN VERSION WITHOUT DOTS */}
+            {/* Timeline Center Line */}
             <div style={{
               position: 'absolute',
               left: '50%',
@@ -375,7 +989,6 @@ function App() {
             }}>
               {nftChain.map((nft, index) => {
                 const isEven = index % 2 === 0;
-                const parallaxOffset = getParallaxOffset(index);
                 const isFirst = index === 0;
                 const isLast = index === nftChain.length - 1;
                 const isSelected = selectedNft?.mint === nft.mint;
@@ -390,12 +1003,10 @@ function App() {
                       alignItems: 'center',
                       justifyContent: isEven ? 'flex-start' : 'flex-end',
                       marginBottom: '80px',
-                      position: 'relative',
-                      transform: `translateY(${parallaxOffset}px)`,
-                      transition: 'transform 0.6s cubic-bezier(0.23, 1, 0.32, 1)'
+                      position: 'relative'
                     }}
                   >
-                    {/* CLEAN CONNECTION LINE - NO DOT */}
+                    {/* Connection Line */}
                     <div style={{
                       position: 'absolute',
                       left: isEven ? 'calc(50% + 1px)' : '50%',
@@ -646,17 +1257,15 @@ function App() {
                 );
               })}
 
-              {/* Integrated Upload Section as part of the timeline */}
+              {/* Get Token Button Section */}
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 marginBottom: '80px',
-                position: 'relative',
-                transform: `translateY(${getParallaxOffset(nftChain.length)}px)`,
-                transition: 'transform 0.6s cubic-bezier(0.23, 1, 0.32, 1)'
+                position: 'relative'
               }}>
-                {/* CLEAN CONNECTION LINE FOR UPLOAD - NO DOT */}
+                {/* Connection Line for Get Token */}
                 <div style={{
                   position: 'absolute',
                   left: '50%',
@@ -668,143 +1277,100 @@ function App() {
                   transform: 'translateY(-50%)'
                 }} />
 
-                {/* Upload Card - Subtle and Integrated */}
+                {/* Get Token Button */}
                 <div style={{
                   width: isMobile ? '85%' : '42%',
-                  background: `${mikoColors.surface}80`,
+                  background: mikoColors.surface,
                   borderRadius: '16px',
-                  padding: '30px',
-                  border: `2px dashed ${mikoColors.border}`,
+                  padding: '40px 30px',
+                  border: `2px solid ${mikoColors.highlight}30`,
                   position: 'relative',
+                  textAlign: 'center',
                   backdropFilter: 'blur(10px)',
                   transition: 'all 0.4s ease'
                 }}>
                   <div style={{
-                    textAlign: 'center',
-                    marginBottom: '30px'
+                    marginBottom: '24px'
                   }}>
                     <h3 style={{ 
-                      fontSize: isMobile ? '1.3rem' : '1.6rem', 
-                      fontWeight: '600',
+                      fontSize: isMobile ? '1.4rem' : '1.8rem', 
+                      fontWeight: '700',
                       color: mikoColors.text,
-                      marginBottom: '8px'
+                      marginBottom: '12px'
                     }}>
-                      Continue the Journey
+                      Get Your Token
                     </h3>
                     <p style={{ 
                       color: mikoColors.textSecondary,
-                      fontSize: '0.95rem',
-                      margin: 0
+                      fontSize: '1rem',
+                      margin: 0,
+                      lineHeight: '1.5'
                     }}>
-                      Add the next piece to the timeline
+                      Mint a new token from this collection and have it transferred directly to your wallet
                     </p>
                   </div>
 
-                  {/* File Inputs - Compact */}
-                  <div style={{
-                    display: 'grid',
-                    gap: '16px',
-                    marginBottom: '24px'
-                  }}>
-                    <div>
-                      <label style={{ 
-                        display: 'block', 
-                        marginBottom: '8px', 
-                        fontWeight: '500', 
-                        color: mikoColors.text,
-                        fontSize: '14px'
-                      }}>
-                        Image File
-                      </label>
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        onChange={e => setImageFile(e.target.files[0])}
-                        style={{ 
-                          padding: '12px',
-                          border: `1px solid ${mikoColors.border}`,
-                          borderRadius: '8px',
-                          width: '100%',
-                          background: mikoColors.background,
-                          color: mikoColors.text,
-                          fontSize: '14px',
-                          transition: 'all 0.3s ease'
-                        }}
-                        onFocus={(e) => e.target.style.borderColor = mikoColors.accent}
-                        onBlur={(e) => e.target.style.borderColor = mikoColors.border}
-                      />
-                      {imageFile && (
-                        <div style={{ 
-                          color: mikoColors.accent, 
-                          marginTop: '6px', 
-                          fontSize: '13px',
-                          fontWeight: '500'
-                        }}>
-                          Selected: {imageFile.name}
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div>
-                      <label style={{ 
-                        display: 'block', 
-                        marginBottom: '8px', 
-                        fontWeight: '500', 
-                        color: mikoColors.text,
-                        fontSize: '14px'
-                      }}>
-                        Additional Data (Optional)
-                      </label>
-                      <input 
-                        type="file" 
-                        onChange={e => setExtraFile(e.target.files[0])}
-                        style={{ 
-                          padding: '12px',
-                          border: `1px solid ${mikoColors.border}`,
-                          borderRadius: '8px',
-                          width: '100%',
-                          background: mikoColors.background,
-                          color: mikoColors.text,
-                          fontSize: '14px',
-                          transition: 'all 0.3s ease'
-                        }}
-                        onFocus={(e) => e.target.style.borderColor = mikoColors.highlight}
-                        onBlur={(e) => e.target.style.borderColor = mikoColors.border}
-                      />
-                      {extraFile && (
-                        <div style={{ 
-                          color: mikoColors.highlight, 
-                          marginTop: '6px', 
-                          fontSize: '13px',
-                          fontWeight: '500'
-                        }}>
-                          Selected: {extraFile.name}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  
-                  {/* Upload Button */}
                   <button 
-                    onClick={handleUpload} 
-                    disabled={uploading || !imageFile}
+                    onClick={getToken}
+                    disabled={minting || !wallet}
                     style={{ 
-                      padding: '14px 24px', 
-                      background: uploading ? mikoColors.border : `linear-gradient(135deg, ${mikoColors.accent}, ${mikoColors.highlight})`,
+                      padding: '16px 32px', 
+                      background: minting ? mikoColors.border : 
+                                 !wallet ? mikoColors.secondary : 
+                                 `linear-gradient(135deg, ${mikoColors.accent}, ${mikoColors.highlight})`,
                       color: mikoColors.background,
                       border: 'none',
-                      borderRadius: '10px',
-                      cursor: uploading ? 'not-allowed' : 'pointer',
-                      fontSize: '15px',
-                      fontWeight: '600',
+                      borderRadius: '12px',
+                      cursor: (minting || !wallet) ? 'not-allowed' : 'pointer',
+                      fontSize: '18px',
+                      fontWeight: '700',
                       width: '100%',
-                      transition: 'all 0.3s ease'
+                      transition: 'all 0.3s ease',
+                      position: 'relative',
+                      overflow: 'hidden'
                     }}
-                    onMouseEnter={(e) => !uploading && (e.target.style.transform = 'translateY(-2px)')}
-                    onMouseLeave={(e) => !uploading && (e.target.style.transform = 'translateY(0)')}
+                    onMouseEnter={(e) => {
+                      if (!minting && wallet) {
+                        e.target.style.transform = 'translateY(-2px)';
+                        e.target.style.boxShadow = `0 8px 25px ${mikoColors.accent}40`;
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!minting && wallet) {
+                        e.target.style.transform = 'translateY(0)';
+                        e.target.style.boxShadow = 'none';
+                      }
+                    }}
                   >
-                    {uploading ? 'Creating...' : 'Add to Timeline'}
+                    {minting ? (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                        <div style={{
+                          width: '16px',
+                          height: '16px',
+                          border: `2px solid transparent`,
+                          borderTop: `2px solid ${mikoColors.background}`,
+                          borderRadius: '50%',
+                          animation: 'spin 1s linear infinite'
+                        }} />
+                        Minting Your Token...
+                      </div>
+                    ) : !wallet ? (
+                      'Connect Wallet to Get Token'
+                    ) : (
+                      'Get Your Token Now'
+                    )}
                   </button>
+
+                  {!wallet && (
+                    <p style={{ 
+                      color: mikoColors.textSecondary,
+                      fontSize: '14px',
+                      marginTop: '16px',
+                      fontStyle: 'italic'
+                    }}>
+                      You need to connect your wallet to receive the token
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -812,7 +1378,7 @@ function App() {
         )}
 
         {/* Success Message */}
-        {uploadResponse && (
+        {mintResponse && (
           <section style={{ 
             background: mikoColors.surface,
             padding: '40px',
@@ -844,8 +1410,15 @@ function App() {
               fontSize: '1.5rem',
               fontWeight: '600'
             }}>
-              Collectible Created!
+              Token Successfully Minted!
             </h3>
+            <p style={{
+              color: mikoColors.textSecondary,
+              marginBottom: '24px',
+              fontSize: '1rem'
+            }}>
+              Your new token has been minted and transferred to your wallet.
+            </p>
             
             <div style={{ 
               background: mikoColors.background,
@@ -860,7 +1433,7 @@ function App() {
                 marginBottom: '8px',
                 fontWeight: '600'
               }}>
-                Mint Address
+                Token Address
               </div>
               <div style={{ 
                 fontSize: '14px',
@@ -868,40 +1441,43 @@ function App() {
                 wordBreak: 'break-all',
                 color: mikoColors.text
               }}>
-                {uploadResponse.mint}
+                {mintResponse.mint}
               </div>
             </div>
 
             <div style={{ 
               display: 'flex', 
               gap: '12px', 
-              justifyContent: 'center'
+              justifyContent: 'center',
+              flexWrap: 'wrap'
             }}>
+              {mintResponse.explorerLink && (
+                <a 
+                  href={mintResponse.explorerLink}
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  style={{
+                    padding: '12px 20px',
+                    background: mikoColors.primary,
+                    color: mikoColors.text,
+                    textDecoration: 'none',
+                    borderRadius: '8px',
+                    fontWeight: '600',
+                    transition: 'all 0.3s ease',
+                    border: `1px solid ${mikoColors.border}`
+                  }}
+                  onMouseEnter={(e) => {
+                    e.target.style.background = mikoColors.accent;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.target.style.background = mikoColors.primary;
+                  }}
+                >
+                  View Transaction
+                </a>
+              )}
               <a 
-                href={uploadResponse.explorerLink}
-                target="_blank" 
-                rel="noopener noreferrer"
-                style={{
-                  padding: '12px 20px',
-                  background: mikoColors.primary,
-                  color: mikoColors.text,
-                  textDecoration: 'none',
-                  borderRadius: '8px',
-                  fontWeight: '600',
-                  transition: 'all 0.3s ease',
-                  border: `1px solid ${mikoColors.border}`
-                }}
-                onMouseEnter={(e) => {
-                  e.target.style.background = mikoColors.accent;
-                }}
-                onMouseLeave={(e) => {
-                  e.target.style.background = mikoColors.primary;
-                }}
-              >
-                View Transaction
-              </a>
-              <a 
-                href={`/?mint=${uploadResponse.mint}`}
+                href={`/?mint=${mintResponse.mint}`}
                 style={{
                   padding: '12px 20px',
                   background: `linear-gradient(135deg, ${mikoColors.accent}, ${mikoColors.highlight})`,
@@ -914,6 +1490,21 @@ function App() {
               >
                 View in Timeline
               </a>
+              <button
+                onClick={() => setMintResponse(null)}
+                style={{
+                  padding: '12px 20px',
+                  background: 'transparent',
+                  color: mikoColors.textSecondary,
+                  border: `1px solid ${mikoColors.border}`,
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontWeight: '600',
+                  transition: 'all 0.3s ease'
+                }}
+              >
+                Close
+              </button>
             </div>
           </section>
         )}
